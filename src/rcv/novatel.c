@@ -71,6 +71,7 @@ static const char rcsid[]="$Id: novatel.c,v 1.2 2008/07/14 00:05:05 TTAKA Exp $"
 #define ID_RAWALM   74          /* message id: oem4 raw almanac */
 #define ID_RAWEPHEM 41          /* message id: oem4 raw ephemeris */
 #define ID_RAWWAASFRAME 287     /* message id: oem4 raw waas frame */
+#define ID_GPSEPHEM 7 		    /* message id: oem4 decoded gps ephemeris*/
 
 #define ID_QZSSIONUTC 1347      /* message id: oem6 qzss ion/utc parameters */
 #define ID_QZSSRAWEPHEM 1330    /* message id: oem6 qzss raw ephemeris */
@@ -499,6 +500,92 @@ static int decode_rawephemb(raw_t *raw)
     raw->ephsat=sat;
     trace(4,"decode_rawephemb: sat=%2d\n",sat);
     return 2;
+}
+/* decode gpsephemerisb ------------------------------------------------------*/
+static int decode_gpsephemerisb(raw_t *raw)
+{
+	unsigned char *p=raw->buff+OEM4HLEN;
+	eph_t eph={0};
+	int prn,sat;
+	double toc,tow,ura;
+	int week,iode1,iode2;
+
+	trace(3,"decode_rawephemb: len=%d\n",raw->len);
+
+	if (raw->len<OEM4HLEN+224) {
+		trace(2,"oem4 gpsephemb length error: len=%d\n",raw->len);
+		return -1;
+	}
+	prn=U4(p);
+	if (!(sat=satno(SYS_GPS,prn))) {
+		trace(2,"oem4 gpsephemb satellite number error: prn=%d\n",prn);
+		return -1;
+	}
+
+	eph.iodc = U4(p+160)&0x3ff;
+	iode1 = U4(p+16)&0xff;
+	iode2 = U4(p+20)&0xff;
+	if (iode1!=iode2||iode2!=(eph.iodc&0xFF)) return 0;
+	eph.iode = iode1;
+
+	eph.code = 0x01;		// P code ON for L2
+	eph.flag = 0x00;		// Nav data ON for L2
+	eph.fit = 0;			// 4 hour fit interval
+
+	ura = R8(p+216);
+	if (ura <= 4.0) eph.sva = 0;
+	else if (ura < 7.84) eph.sva = 1;
+	else if (ura < 16.0) eph.sva = 2;
+	else if (ura < 32.49) eph.sva = 3;
+	else    eph.sva = 15;
+
+	eph.svh = U4(p+12)&0x3f;
+
+	week = U4(p+28);		// z week
+	toc =  R8(p+164);
+	tow =  R8(p+4);
+	eph.toes = R8(p+32);
+
+	/* adjustment for week handover */
+	if      (eph.toes<tow-302400.0) {week++; tow-=604800.0;}
+	else if (eph.toes>tow+302400.0) {week--; tow+=604800.0;}
+
+	eph.week = adjgpsweek(week);
+	eph.ttr=gpst2time(eph.week,tow);
+	eph.toc=gpst2time(eph.week,toc);
+	eph.toe=gpst2time(eph.week,eph.toes);
+
+	eph.tgd[0] = R8(p+172);
+	eph.f0 = R8(p+180);
+	eph.f1 = R8(p+188);
+	eph.f2 = R8(p+196);
+
+	eph.crs = R8(p+104);
+	eph.deln = R8(p+48);
+	eph.M0 = R8(p+56);
+	eph.cuc = R8(p+80);
+	eph.e = R8(p+64);
+	eph.cus = R8(p+88);
+	eph.A = R8(p+40);
+
+	eph.cic = R8(p+112);
+	eph.OMG0 = R8(p+144);
+	eph.cis = R8(p+120);
+	eph.i0 = R8(p+128);
+	eph.crc = R8(p+96);
+	eph.omg = R8(p+72);
+	eph.OMGd = R8(p+152);
+	eph.idot = R8(p+136);
+
+	if (!strstr(raw->opt,"-EPHALL")) {
+		if (eph.iode==raw->nav.eph[sat-1].iode) return 0; /* unchanged */
+	}
+
+	eph.sat=sat;
+	raw->nav.eph[sat-1]=eph;
+	raw->ephsat=sat;
+	trace(4,"decode_gpsephemb: sat=%2d\n",sat);
+	return 2;
 }
 /* decode ionutcb ------------------------------------------------------------*/
 static int decode_ionutcb(raw_t *raw)
@@ -1317,6 +1404,7 @@ static int decode_oem4(raw_t *raw)
         case ID_RAWSBASFRAME  : return decode_rawsbasframeb  (raw);
         case ID_IONUTC        : return decode_ionutcb        (raw);
         case ID_GLOEPHEMERIS  : return decode_gloephemerisb  (raw);
+        case ID_GPSEPHEM      : return decode_gpsephemerisb  (raw);
         case ID_QZSSRAWEPHEM  : return decode_qzssrawephemb  (raw);
         case ID_QZSSRAWSUBFRAME: return decode_qzssrawsubframeb(raw);
         case ID_QZSSIONUTC    : return decode_qzssionutcb    (raw);
